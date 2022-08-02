@@ -1,111 +1,165 @@
+import os
+import glob
+import random
+import time
 import cv2
 import numpy as np
+import darknet
 
-image = cv2.imread('e.jpg')
-image_gray = cv2.imread('e.jpg', cv2.IMREAD_GRAYSCALE)
 
-# cv2.imshow('image', image)
-# cv2.imshow('image_gray', image_gray)
-# cv2.waitKey(0)
-# cv2.destroyAllWindows()
+def check_batch_shape(images, batch_size):
+    """
+        Image sizes should be the same width and height
+    """
+    shapes = [image.shape for image in images]
+    if len(set(shapes)) > 1:
+        raise ValueError("Images don't have same shape")
+    if len(shapes) > batch_size:
+        raise ValueError("Batch size higher than number of images")
+    return shapes[0]
 
-blur = cv2.GaussianBlur(image_gray, ksize=(5,5), sigmaX=0)
-ret, thresh1 = cv2.threshold(blur, 127, 255, cv2.THRESH_BINARY)
 
-"""
-cv2.Canny(gray_img, threshold1, threshold2)
-- threshold1 : 다른 엣지와의 인접 부분(엣지가 되기 쉬운 부분)에 있어 엣지인지 아닌지를 판단하는 임계값
-- threshold2 : 엣지인지 아닌지를 판단하는 임계값
+def load_images(images_path):
+    """
+    If image path is given, return it directly
+    For txt file, read it and return each line as image path
+    In other case, it's a folder, return a list with names of each
+    jpg, jpeg and png file
+    """
+    input_path_extension = images_path.split('.')[-1]
+    if input_path_extension in ['jpg', 'jpeg', 'png']:
+        return [images_path]
+    elif input_path_extension == "txt":
+        with open(images_path, "r") as f:
+            return f.read().splitlines()
+    else:
+        return glob.glob(
+            os.path.join(images_path, "*.jpg")) + \
+            glob.glob(os.path.join(images_path, "*.png")) + \
+            glob.glob(os.path.join(images_path, "*.jpeg"))
 
-외곽선(엣지) 검출 파라미터 조정을 하는 방법
-1. 먼저 threshold1와 threshold2를 같은 값으로 한다.
-2. 검출되길 바라는 부분에 엣지가 표시되는지 확인하면서 threshold2 값을 조정한다.
-3. 2번의 조정이 끝나면, threshold1를 사용하여 엣지를 연결시킨다.
-"""
-edged = cv2.Canny(blur, 10, 250)
-# cv2.imshow('Edged', edged)
-# cv2.waitKey(0)
 
-kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-closed = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, kernel)
-# cv2.imshow('closed', closed)
-# cv2.waitKey(0)
+def prepare_batch(images, network, channels=3):
+    width = darknet.network_width(network)
+    height = darknet.network_height(network)
 
-contours, _ = cv2.findContours(closed.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-total = 0
+    darknet_images = []
+    for image in images:
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_resized = cv2.resize(image_rgb, (width, height),
+                                   interpolation=cv2.INTER_LINEAR)
+        custom_image = image_resized.transpose(2, 0, 1)
+        darknet_images.append(custom_image)
 
-contours_xy = np.array(contours)
-contours_xy.shape
+    batch_array = np.concatenate(darknet_images, axis=0)
+    batch_array = np.ascontiguousarray(batch_array.flat, dtype=np.float32)/255.0
+    darknet_images = batch_array.ctypes.data_as(darknet.POINTER(darknet.c_float))
+    return darknet.IMAGE(width, height, channels, darknet_images)
 
-# x의 min과 max 찾기
-x_min, x_max = 0, 0
-value = list()
-for i in range(len(contours_xy)):
-    for j in range(len(contours_xy[i])):
-        value.append(contours_xy[i][j][0][0])  # 네번째 괄호가 0일때 x의 값
-        x_min = min(value)
-        x_max = max(value)
 
-# y의 min과 max 찾기
-y_min, y_max = 0, 0
-value = list()
-for i in range(len(contours_xy)):
-    for j in range(len(contours_xy[i])):
-        value.append(contours_xy[i][j][0][1])  # 네번째 괄호가 0일때 x의 값
-        y_min = min(value)
-        y_max = max(value)
+def image_detection(image_or_path, network, class_names, class_colors, thresh):
+    # Darknet doesn't accept numpy images.
+    # Create one with image we reuse for each detect
+    width = darknet.network_width(network)
+    height = darknet.network_height(network)
+    darknet_image = darknet.make_image(width, height, 3)
 
-# image trim 하기
-x = x_min
-y = y_min
-w = x_max-x_min
-h = y_max-y_min
+    if type(image_or_path) == "str":
+        image = cv2.imread(image_or_path)
+    else:
+        image = image_or_path
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image_resized = cv2.resize(image_rgb, (width, height),
+                               interpolation=cv2.INTER_LINEAR)
 
-img_trim = image[y:y+h, x:x+w]
-cv2.imwrite('e.jpg', img_trim)
-org_image = cv2.imread('e.jpg')
+    darknet.copy_image_from_bytes(darknet_image, image_resized.tobytes())
+    detections = darknet.detect_image(network, class_names, darknet_image, thresh=thresh)
+    darknet.free_image(darknet_image)
+    image = darknet.draw_boxes(detections, image_resized, class_colors)
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB), detections
 
-cv2.imshow('org_image', org_image)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
 
-#--① 크로마키 배경 영상과 합성할 배경 영상 읽기
-img1 = cv2.imread('e.jpg')
-img2 = cv2.imread('./bg/bg1.jpg')
+def batch_detection(network, images, class_names, class_colors,
+                    thresh=0.25, hier_thresh=.5, nms=.45, batch_size=4):
+    image_height, image_width, _ = check_batch_shape(images, batch_size)
+    darknet_images = prepare_batch(images, network)
+    batch_detections = darknet.network_predict_batch(network, darknet_images, batch_size, image_width,
+                                                     image_height, thresh, hier_thresh, None, 0, 0)
+    batch_predictions = []
+    for idx in range(batch_size):
+        num = batch_detections[idx].num
+        detections = batch_detections[idx].dets
+        if nms:
+            darknet.do_nms_obj(detections, num, len(class_names), nms)
+        predictions = darknet.remove_negatives(detections, class_names, num)
+        images[idx] = darknet.draw_boxes(predictions, images[idx], class_colors)
+        batch_predictions.append(predictions)
+    darknet.free_batch_detections(batch_detections, batch_size)
+    return images, batch_predictions
 
-#--② ROI 선택을 위한 좌표 계산
-height1, width1 = img1.shape[:2]
-height2, width2 = img2.shape[:2]
-x = (width2 - width1)//2
-y = height2 - height1
-w = x + width1
-h = y + height1
-print(x, y, w, h)
 
-#--③ 크로마키 배경 영상에서 크로마키 영역을 10픽셀 정도로 지정
-chromakey = img1[:10, :10, :]
-offset = 20
+def image_classification(image, network, class_names):
+    width = darknet.network_width(network)
+    height = darknet.network_height(network)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image_resized = cv2.resize(image_rgb, (width, height),
+                                interpolation=cv2.INTER_LINEAR)
+    darknet_image = darknet.make_image(width, height, 3)
+    darknet.copy_image_from_bytes(darknet_image, image_resized.tobytes())
+    detections = darknet.predict_image(network, darknet_image)
+    predictions = [(name, detections[idx]) for idx, name in enumerate(class_names)]
+    darknet.free_image(darknet_image)
+    return sorted(predictions, key=lambda x: -x[1])
 
-#--④ 크로마키 영역과 영상 전체를 HSV로 변경
-hsv_chroma = cv2.cvtColor(chromakey, cv2.COLOR_BGR2HSV)
-hsv_img = cv2.cvtColor(img1, cv2.COLOR_BGR2HSV)
 
-#--⑤ 크로마키 영역의 H값에서 offset 만큼 여유를 두어서 범위 지정
-# offset 값은 여러차례 시도 후 결정
-#chroma_h = hsv_chroma[0]
-chroma_h = hsv_chroma[:,:,0]
-lower = np.array([chroma_h.min()-offset, 100, 100])
-upper = np.array([chroma_h.max()+offset, 255, 255])
+def convert2relative(image, bbox):
+    """
+    YOLO format use relative coordinates for annotation
+    """
+    x, y, w, h = bbox
+    height, width, _ = image.shape
+    return x/width, y/height, w/width, h/height
 
-#--⑥ 마스크 생성 및 마스킹 후 합성
-mask = cv2.inRange(hsv_img, lower, upper)
-mask_inv = cv2.bitwise_not(mask)
-roi = img2[y:h, x:w]
-fg = cv2.bitwise_and(img1, img1, mask=mask_inv)
-bg = cv2.bitwise_and(roi, roi, mask=mask)
-img2[y:h, x:w] = fg + bg
 
-#--⑦ 결과 출력
-cv2.imshow('added', img2)
-cv2.waitKey()
-cv2.destroyAllWindows()
+def save_annotations(name, image, detections, class_names):
+    """
+    Files saved with image_name.txt and relative coordinates
+    """
+    file_name = os.path.splitext(name)[0] + ".txt"
+    with open(file_name, "w") as f:
+        for label, confidence, bbox in detections:
+            x, y, w, h = convert2relative(image, bbox)
+            label = class_names.index(label)
+            f.write("{} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f}\n".format(label, x, y, w, h, float(confidence)))
+
+
+def main():
+    random.seed(3)  # deterministic bbox colors
+    network, class_names, class_colors = darknet.load_network(
+        "./cfg/yolov4.cfg",
+        "./cfg/coco.data",
+        "yolov4.weights",
+        batch_size=1
+    )
+    save_labels = True
+    images_path = "./bg"
+    images = load_images(images_path)
+
+    index = 0
+    while True:
+        # loop asking for new image paths if no list is given
+        if index >= len(images):
+            break
+        image_name = images[index]
+        prev_time = time.time()
+        image, detections = image_detection(
+            image_name, network, class_names, class_colors, .25)
+        if save_labels:
+            save_annotations(image_name, image, detections, class_names)
+        index += 1
+
+
+if __name__ == "__main__":
+    # unconmment next line for an example of batch processing
+    # batch_detection_example()
+    main()

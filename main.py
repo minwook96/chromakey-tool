@@ -108,7 +108,7 @@ def create_chromakey(images_path, background_path, location_type, class_num, dat
                 y_end = height2 - height1
                 # 랜덤 위치
                 x = random.randrange(0, x_end)
-                y = random.randrange(0, y_end)
+                y = random.randrange(600, y_end)
                 w = x + width1
                 h = y + height1
             else:
