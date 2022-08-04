@@ -39,7 +39,7 @@ def create_chromakey(images_path, background_path, location_type, dataset_type, 
         random.seed(3)  # deterministic bbox colors
         network, class_names, class_colors = darknet.load_network(
             "./cfg/yolov4.cfg",
-            "./cfg/coco.data",
+            "./cfg/custom.data",
             "yolov4.weights",
             batch_size=1
         )
