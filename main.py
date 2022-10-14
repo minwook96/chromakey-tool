@@ -34,8 +34,8 @@ def main():
     pass
 
 
-def create_chromakey(images_path, background_path, location_type, dataset_type, auto_labeling):
-    if auto_labeling is True:
+def create_chromakey(foreground_path, background_path, location_type, image_saturation, image_illuminance, image_size, dataset_type, auto_labeling):
+    if auto_labeling:
         random.seed(3)  # deterministic bbox colors
         network, class_names, class_colors = darknet.load_network(
             "./cfg/yolov4.cfg",
@@ -44,7 +44,7 @@ def create_chromakey(images_path, background_path, location_type, dataset_type, 
             batch_size=1
         )
     # img 파일만 가져오기
-    images_list = os.listdir(images_path)
+    images_list = os.listdir(foreground_path)
     file_list_img = [file for file in images_list if file.endswith(".jpg")]
     background_list = os.listdir(background_path)
     file_list_bg = [file for file in background_list if file.endswith(".jpg")]
@@ -54,8 +54,9 @@ def create_chromakey(images_path, background_path, location_type, dataset_type, 
             # --① 크로마 키 배경 영상과 합성할 배경 영상 읽기
             filename = file.rstrip('.jpg')
 
-            # image = cv2.imread(os.path.abspath(images_path) + "/" + file_list_img[n])
-            # image_gray = cv2.imread(os.path.abspath(images_path) + "/" + file_list_img[n], cv2.IMREAD_GRAYSCALE)
+            # --------------------------------외곽선 검출----------------------------------------------
+            # image = cv2.imread(os.path.abspath(foreground_path) + "/" + file_list_img[n])
+            # image_gray = cv2.imread(os.path.abspath(foreground_path) + "/" + file_list_img[n], cv2.IMREAD_GRAYSCALE)
             #
             # blur = cv2.GaussianBlur(image_gray, ksize=(5, 5), sigmaX=0)
             #
@@ -104,9 +105,10 @@ def create_chromakey(images_path, background_path, location_type, dataset_type, 
             # h = y_max - y_min
             #
             # img_trim = image[y:y + h, x:x + w]
-            # cv2.imwrite(os.path.abspath(images_path) + "/" + file_list_img[n], img_trim)
+            # cv2.imwrite(os.path.abspath(foreground_path) + "/" + file_list_img[n], img_trim)
+            # --------------------------------외곽선 검출----------------------------------------------
 
-            img1 = cv2.imread(os.path.abspath(images_path) + "/" + file_list_img[n])
+            img1 = cv2.imread(os.path.abspath(foreground_path) + "/" + file_list_img[n])
             img2 = cv2.imread(os.path.abspath(background_path) + "/" + file)
 
             # --② ROI 선택을 위한 좌표 계산
@@ -154,26 +156,66 @@ def create_chromakey(images_path, background_path, location_type, dataset_type, 
             # cv2.imshow('chromakey', img1)
             # cv2.imshow('added', img2)
 
-            # if dataset_type == 1:
-            #     f = open("images/{}_{}.txt".format(filename, n), 'w')
-            #     b = (x, w, y, h)
-            #     bb = convert((width2, height2), b)
-            #     f.write("{} {} {} {} {}\n".format(class_num, bb[0], bb[1], bb[2], bb[3]))
-            #     f.close()
-            # elif dataset_type == 2:
-            #     f = open("images/{}_{}.txt".format(filename, n), 'w')
-            # else:
-            #     f = open("images/{}_{}.txt".format(filename, n), 'w')
+            if dataset_type == 1:
+                f = open("images/{}_{}.txt".format(filename, n), 'w')
+                b = (x, w, y, h)
+                bb = convert((width2, height2), b)
+                f.write("{} {} {} {} {}\n".format("0", bb[0], bb[1], bb[2], bb[3]))
+                f.close()
+            elif dataset_type == 2:
+                f = open("images/{}_{}.txt".format(filename, n), 'w')
+            else:
+                f = open("images/{}_{}.txt".format(filename, n), 'w')
+
+            # 이미지 채도 조정
+            if image_saturation > 0:
+                img2 = increase_saturation(img2, image_saturation)
+
+            # 이미지 조도 조정
+            if image_illuminance > 0:
+                img2 = increase_illuminance(img2, image_illuminance)
+
+            # 이미지 사이즈 조정
+            img2 = image_resize(img2, image_size)
 
             cv2.imwrite("./{}/{}_{}.jpg".format(imgPath, filename, n), img2)
-            detection_image = "./{}/{}_{}.jpg".format(imgPath, filename, n)
-            image, detections = image_detection(detection_image, network, class_names, class_colors, .25)
             if auto_labeling:
+                detection_image = "./{}/{}_{}.jpg".format(imgPath, filename, n)
+                image, detections = image_detection(detection_image, network, class_names, class_colors, .25)
                 save_annotations(detection_image, image, detections, class_names)
             cv2.waitKey()
             cv2.destroyAllWindows()
             # console.print()
 
+def increase_saturation(img, value):
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+
+    lim = 255 - value
+    s[s > lim] = 255
+    s[s <= lim] += value
+
+    final_hsv = cv2.merge((h, s, v))
+    img = cv2.cvtColor(final_hsv, cv2.COLOR_HSV2BGR)
+
+    return img
+def increase_illuminance(img, value):
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+
+    lim = 255 - value
+    v[v > lim] = 255
+    v[v <= lim] += value
+
+    final_hsv = cv2.merge((h, s, v))
+    img = cv2.cvtColor(final_hsv, cv2.COLOR_HSV2BGR)
+
+    return img
+
+def image_resize(img, value):
+    resize_img = cv2.resize(img, (value, value), interpolation=cv2.INTER_AREA)
+
+    return resize_img
 
 def convert(size, box):
     dw = 1./size[0]
@@ -267,19 +309,19 @@ def init(default):
 
     if default:
         document_dict = {
-            "images_path": "fg",
+            "foreground_path": "fg",
             "background_path": "bg",
             "type": 1,
             "IMAGE_SIZE": 512,
             "CLASSES": [{"CLASS_NAME": "Test", "SEARCH_KEYWORDS": "images of cats"}]
         }
-        create_chromakey(document_dict["images_path"], document_dict["background_path"], document_dict["type"])
+        create_chromakey(document_dict["foreground_path"], document_dict["background_path"], document_dict["type"])
 
     else:
         while True:  # 크로마키 이미지 경로 입력
-            images_path = click.prompt("Insert your Chroma key images path")
+            foreground_path = click.prompt("Insert your Chroma key images path")
             try:
-                file_list = os.listdir(images_path)
+                file_list = os.listdir(foreground_path)
                 file_list_img = [file for file in file_list if file.endswith(".jpg")]
                 if not file_list_img:
                     raise
@@ -292,6 +334,7 @@ def init(default):
 
         console.clear()
         console.print(BANNER)
+
         while True:  # 백그라운드 이미지 경로 입력
             background_path = click.prompt("Insert your background images path")
             try:
@@ -320,6 +363,38 @@ def init(default):
         # console.print("[bold]Enter the desired human class number [/bold][bold blue](start : 0)[/bold blue]")
         # class_num = click.prompt("Insert class number", type=int)
 
+        console.clear()  # 이미지 채도 지정
+        console.print(BANNER)
+        console.print("[bold]Choose image saturation format[/bold]")
+        console.print("""
+                0(origin) ~ 255
+                """)
+        image_saturation = click.prompt("Insert saturation", type=int)
+
+        console.clear()  # 이미지 조도 지정
+        console.print(BANNER)
+        console.print("[bold]Choose image illuminance format[/bold]")
+        console.print("""
+                0(origin) ~ 255
+                """)
+        image_illuminance = click.prompt("Insert illuminance", type=int)
+
+        console.clear()  # 이미지 사이즈 지정
+        console.print(BANNER)
+        console.print("[bold]Choose image size format[/bold]")
+        console.print("""
+                [1] 320x320
+                [2] 416x416
+                [3] 608x608
+                """)
+        image_size = click.prompt("Insert image size", type=int)
+        if image_size == 1:
+            image_size = 320
+        elif image_size == 2:
+            image_size = 416
+        else:
+            image_size = 608
+
         console.clear()  # 데이터셋 형태 지정
         console.print(BANNER)
         console.print("[bold]Choose dataset format[/bold]")
@@ -343,7 +418,7 @@ def init(default):
         else:
             auto_labeling = False
 
-        create_chromakey(images_path, background_path, location_type, dataset_type, auto_labeling)
+        create_chromakey(foreground_path, background_path, location_type, image_saturation, image_illuminance, image_size, dataset_type, auto_labeling)
 
 
 if __name__ == "__main__":
